@@ -1,0 +1,835 @@
+###############################################################################
+# This file defines a multi-stage Azure DevOps pipeline for building,
+# packaging, copying, and deploying several components (models, service, and
+# web) on a scheduled basis. Sensitive or company-specific details have been
+# replaced with [REDACTED].
+###############################################################################
+
+# Schedules define when (cron syntax) and how often this pipeline runs automatically
+schedules:
+  - cron: "0 5 * * *"    # Runs at 5:00 AM (UTC) every day
+    displayName: Nightly build
+    branches:
+      include:
+        - dev           # Pipeline triggers on the 'dev' branch
+    always: true         # Always run regardless of changes
+
+# Pipeline's display name uses a variable for version numbering
+name: $(versionNumber)$(Rev:.r)
+
+# Top-level variables used across the pipeline
+variables:
+  branch: "dev"
+  versionNumber: "221.6"
+
+###############################################################################
+# Resources section where external repositories are declared
+###############################################################################
+resources:
+  repositories:
+    - repository: [REDACTED]
+      type: git
+      name: [REDACTED]          # Redacted repository name
+      ref: refs/heads/dev
+    - repository: [REDACTED]
+      type: git
+      name: [REDACTED]
+      ref: refs/heads/dev
+    - repository: [REDACTED]
+      type: git
+      name: [REDACTED]
+      ref: refs/heads/dev
+    - repository: [REDACTED]
+      type: git
+      name: [REDACTED]
+      ref: refs/heads/dev
+    - repository: [REDACTED]
+      type: git
+      name: [REDACTED]
+      ref: refs/heads/dev
+
+###############################################################################
+# STAGES: The pipeline is divided into stages (Build, Deploy, etc.).
+# Each stage can contain multiple jobs, which in turn contain the build or
+# deployment steps.
+###############################################################################
+stages:
+
+  #############################################################################
+  # STAGE: Build
+  # Builds and packages multiple projects: models, service, and web.
+  #############################################################################
+  - stage: Build
+    displayName: 'Build models service and web'
+    jobs:
+      - job:
+        pool:
+          # Agent pool containing build agents
+          name: Build Agents
+        variables:
+          # Typical MSBuild variables
+          solution: '**/*.sln'
+          buildPlatform: 'Any CPU'
+          buildConfiguration: 'Release'
+          buildNo: '$(Build.BuildNumber)'
+
+        steps:
+          #####################################################################
+          # Checkout steps: Pull down the separate repositories (redacted).
+          #####################################################################
+          - checkout: [REDACTED]
+            submodules: true
+          - checkout: [REDACTED]
+            submodules: true
+          - checkout: [REDACTED]
+            submodules: true
+          - checkout: [REDACTED]
+            submodules: true
+          - checkout: [REDACTED]
+            submodules: true
+
+          #####################################################################
+          # Task: JSON to Variable
+          # Reads a JSON file to make its contents available as pipeline vars
+          #####################################################################
+          - task: OneLuckiDev.json2variable.vsts-json-to-variable.oneLuckiDevJson2Variable@1
+            displayName: 'JSON to Variable'
+            inputs:
+              jsonFile: '$(System.DefaultWorkingDirectory)/[REDACTED]/version.json'
+              shouldPrefixVariables: false
+
+          #####################################################################
+          # Task: NuGetToolInstaller
+          # Ensures a specified NuGet version is installed on the build agent
+          #####################################################################
+          - task: NuGetToolInstaller@1
+            displayName: 'Use NuGet 6.0.0'
+            inputs:
+              versionSpec: 6.0.0
+
+          #####################################################################
+          # Task: NuGetCommand (restore)
+          # Restores project dependencies using the specified feed
+          #####################################################################
+          - task: NuGetCommand@2
+            displayName: 'NuGet restore'
+            inputs:
+              restoreSolution: '$(System.DefaultWorkingDirectory)/[REDACTED]/[REDACTED].sln'
+              vstsFeed: '[REDACTED GUID]'
+
+          #####################################################################
+          # Task: VSBuild
+          # Builds the solution with specified MSBuild arguments and config
+          #####################################################################
+          - task: VSBuild@1
+            displayName: 'Build solution $(System.DefaultWorkingDirectory)/[REDACTED]/[REDACTED].sln'
+            inputs:
+              solution: '$(System.DefaultWorkingDirectory)/[REDACTED]/[REDACTED].sln'
+              msbuildArgs: '-m /p:SiconPackageVersion="221.7" /p:BUILDNO="$(buildNo)" /p:DeployOnBuild=true /p:WebPublishMethod=Package /p:PackageAsSingleFile=true /p:SkipInvalidConfigurations=true /p:PackageLocation="$(build.artifactStagingDirectory)"'
+              platform: '$(buildPlatform)'
+              configuration: '$(buildConfiguration)'
+              maximumCpuCount: true
+
+          #####################################################################
+          # Task: DotNetCoreCLI (pack)
+          # Creates a NuGet package from the specified .csproj
+          #####################################################################
+          - task: DotNetCoreCLI@2
+            displayName: 'Nuget Pack'
+            inputs:
+              command: pack
+              packagesToPack: '$(System.DefaultWorkingDirectory)/[REDACTED]/[REDACTED].csproj'
+              nobuild: true
+              includesymbols: true
+              includesource: true
+              versioningScheme: byPrereleaseNumber
+              patchVersion: 5
+
+          #####################################################################
+          # Task: NuGetCommand (push)
+          # Publishes the created NuGet package to the feed
+          #####################################################################
+          - task: NuGetCommand@2
+            displayName: 'NuGet push'
+            inputs:
+              command: push
+              publishVstsFeed: '[REDACTED GUID]'
+              allowPackageConflicts: true
+
+          #####################################################################
+          # Task: DeleteFiles
+          # Cleans up staging directory to remove unneeded artifacts
+          #####################################################################
+          - task: DeleteFiles@1
+            displayName: 'Delete files from $(Build.ArtifactStagingDirectory)'
+            inputs:
+              SourceFolder: '$(Build.ArtifactStagingDirectory)'
+              Contents: '**/*'
+
+          #####################################################################
+          # Powershell: Copy old builds
+          # Moves older builds matching specific version patterns to an 'OLD' folder
+          #####################################################################
+          - powershell: |
+              $sourceFolder = '[REDACTED]'
+              $targetFolder = '[REDACTED]'
+              
+              $directories = Get-ChildItem -Path $sourceFolder -Directory | Where-Object { $_.Name -like '*221*' }
+              
+              foreach ($dir in $directories) {
+                $destination = Join-Path -Path $targetFolder -ChildPath $dir.Name
+                Copy-Item -Path $dir.FullName -Destination $destination -Recurse -Force
+                Write-Host "Copied folder: $($dir.FullName) to $destination"
+              
+                Remove-Item -Path $dir.FullName -Recurse -Force
+                Write-Host "Deleted folder: $($dir.FullName) from source"
+              }
+            displayName: 'Copy old builds'
+
+          #####################################################################
+          # Task: CopyFiles
+          # Copies all .zip files from one directory to another
+          #####################################################################
+          - task: CopyFiles@2
+            displayName: 'Copy Files to: [REDACTED]'
+            inputs:
+              SourceFolder: '[REDACTED]'
+              Contents: '*.zip'
+              TargetFolder: '[REDACTED]'
+
+          #####################################################################
+          # Task: DeleteFiles
+          # Removes old .zip files from the specified location
+          #####################################################################
+          - task: DeleteFiles@1
+            displayName: 'Delete old zips'
+            inputs:
+              SourceFolder: '[REDACTED]'
+              Contents: '*.zip'
+
+          #####################################################################
+          # Delete old Approvals Service artifacts if present
+          #####################################################################
+          - task: DeleteFiles@1
+            displayName: 'Delete files from $(System.ArtifactsDirectory)'
+            inputs:
+              SourceFolder: '$(System.ArtifactsDirectory)'
+              Contents: '**Approvals Service.zip'
+          
+          #####################################################################
+          # Powershell steps to remove directories before copying updated versions
+          #####################################################################
+          - task: PowerShell@2
+            displayName: "Force delete models"
+            inputs:
+              targetType: inline
+              script: |
+                $folderPath = "$(System.DefaultWorkingDirectory)/[REDACTED]/[REDACTED]"
+
+                if (Test-Path $folderPath) {
+                  Remove-Item -Path $folderPath -Recurse -Force
+                  Write-Host "Folder '$folderPath' has been force-deleted."
+                }
+                else {
+                  Write-Host "Folder '$folderPath' does not exist."
+                }
+
+          - task: PowerShell@2
+            displayName: "Force delete datamodels"
+            inputs:
+              targetType: inline
+              script: |
+                $folderPath = "$(System.DefaultWorkingDirectory)/[REDACTED]/[REDACTED]"
+
+                if (Test-Path $folderPath) {
+                  Remove-Item -Path $folderPath -Recurse -Force
+                  Write-Host "Folder '$folderPath' has been force-deleted."
+                }
+                else {
+                  Write-Host "Folder '$folderPath' does not exist."
+                }
+
+          - task: PowerShell@2
+            displayName: "Force delete objects"
+            inputs:
+              targetType: inline
+              script: |
+                $folderPath = "$(System.DefaultWorkingDirectory)/[REDACTED]/[REDACTED]"
+
+                if (Test-Path $folderPath) {
+                  Remove-Item -Path $folderPath -Recurse -Force
+                  Write-Host "Folder '$folderPath' has been force-deleted."
+                }
+                else {
+                  Write-Host "Folder '$folderPath' does not exist."
+                }
+
+          #####################################################################
+          # Copy new builds into the service folder structure
+          #####################################################################
+          - task: CopyFiles@2
+            displayName: 'Copy models'
+            inputs:
+              SourceFolder: '$(System.DefaultWorkingDirectory)/[REDACTED]'
+              TargetFolder: '$(System.DefaultWorkingDirectory)/[REDACTED]/[REDACTED]'
+              OverWrite: true
+          
+          - task: CopyFiles@2
+            displayName: 'Copy datamodels'
+            inputs:
+              SourceFolder: '$(System.DefaultWorkingDirectory)/[REDACTED]'
+              TargetFolder: '$(System.DefaultWorkingDirectory)/[REDACTED]/[REDACTED]'
+              OverWrite: true
+          
+          - task: CopyFiles@2
+            displayName: 'Copy objects'
+            inputs:
+              SourceFolder: '$(System.DefaultWorkingDirectory)/[REDACTED]'
+              TargetFolder: '$(System.DefaultWorkingDirectory)/[REDACTED]/[REDACTED]'
+              OverWrite: true
+
+          #####################################################################
+          # Powershell: Adjust the version.json to match the build pipeline version
+          #####################################################################
+          - powershell: |
+              $jsonFilePath = "$(System.DefaultWorkingDirectory)\[REDACTED]\version.json"
+              
+              $json = Get-Content $jsonFilePath | ConvertFrom-Json
+              
+              $releaseName = "$(Build.BuildNumber)"
+              $versionParts = $releaseName -split '\.'
+              
+              $json.versionName = "v" + $versionParts[0]
+              $json.majorVersion = $versionParts[0]
+              $json.interimVersion = $versionParts[1]
+              $json.hotfixVersion = $versionParts[2]
+              
+              $json | ConvertTo-Json | Set-Content $jsonFilePath -Force
+            displayName: 'Append version to json'
+
+          - task: OneLuckiDev.json2variable.vsts-json-to-variable.oneLuckiDevJson2Variable@1
+            displayName: 'JSON to Variable'
+            inputs:
+              jsonFile: '$(System.DefaultWorkingDirectory)/[REDACTED]/version.json'
+              variablePrefix: jsonVersion
+
+          #####################################################################
+          # Restore NuGet packages again for the service
+          #####################################################################
+          - task: NuGetToolInstaller@1
+            displayName: 'Use NuGet'
+
+          - task: NuGetCommand@2
+            displayName: 'Fetch Nugets'
+            inputs:
+              restoreSolution: '**/**/*.sln'
+              vstsFeed: '[REDACTED GUID]'
+
+          #####################################################################
+          # Build the service solution
+          #####################################################################
+          - task: VSBuild@1
+            displayName: Build Service
+            inputs:
+              solution: '$(System.DefaultWorkingDirectory)/[REDACTED]/[REDACTED].sln'
+              platform: '$(buildPlatform)'
+              configuration: '$(buildConfiguration)'
+
+          #####################################################################
+          # Archive the built artifacts into a ZIP named "Approvals Service.zip"
+          #####################################################################
+          - task: ArchiveFiles@2
+            displayName: 'Archive $(System.DefaultWorkingDirectory)/[REDACTED]/bin/Release'
+            inputs:
+              rootFolderOrFile: '$(System.DefaultWorkingDirectory)/[REDACTED]/bin/Release'
+              includeRootFolder: false
+              archiveFile: '$(Build.ArtifactStagingDirectory)/Approvals Service.zip'
+
+          #####################################################################
+          # Copy the ZIP to a central share folder, using the current BuildNumber
+          #####################################################################
+          - task: CopyFiles@2
+            displayName: 'Copy Files to: [REDACTED]/$(Build.BuildNumber)'
+            inputs:
+              SourceFolder: '$(Build.ArtifactStagingDirectory)'
+              Contents: '**Approvals Service.zip'
+              TargetFolder: '[REDACTED]/$(Build.BuildNumber)'
+
+          #####################################################################
+          # Now build the web application. First, cleanup old ZIPs.
+          #####################################################################
+          - task: DeleteFiles@1
+            displayName: 'Delete files from $(System.ArtifactsDirectory)'
+            inputs:
+              SourceFolder: '$(System.ArtifactsDirectory)'
+              Contents: '**Web Application.zip'
+
+          - task: DeleteFiles@1
+            displayName: 'Delete files from $(Build.ArtifactStagingDirectory)'
+            inputs:
+              SourceFolder: '$(Build.ArtifactStagingDirectory)'
+              Contents: '**/*'
+              
+          #####################################################################
+          # Remove old copies of models and objects from the web repository
+          #####################################################################
+          - task: PowerShell@2
+            displayName: "Force delete models"
+            inputs:
+              targetType: inline
+              script: |
+                $folderPath = "$(System.DefaultWorkingDirectory)/[REDACTED]/[REDACTED]"
+
+                if (Test-Path $folderPath) {
+                  Remove-Item -Path $folderPath -Recurse -Force
+                  Write-Host "Folder '$folderPath' has been force-deleted."
+                }
+                else {
+                  Write-Host "Folder '$folderPath' does not exist."
+                }
+
+          - task: PowerShell@2
+            displayName: "Force delete objects"
+            inputs:
+              targetType: inline
+              script: |
+                $folderPath = "$(System.DefaultWorkingDirectory)/[REDACTED]/[REDACTED]"
+
+                if (Test-Path $folderPath) {
+                  Remove-Item -Path $folderPath -Recurse -Force
+                  Write-Host "Folder '$folderPath' has been force-deleted."
+                }
+                else {
+                  Write-Host "Folder '$folderPath' does not exist."
+                }
+
+          #####################################################################
+          # Copy newly built models and objects to the web project
+          #####################################################################
+          - task: CopyFiles@2
+            displayName: 'Copy models'
+            inputs:
+              SourceFolder: '$(System.DefaultWorkingDirectory)/[REDACTED]'
+              TargetFolder: '$(System.DefaultWorkingDirectory)/[REDACTED]/[REDACTED]'
+              OverWrite: true
+          
+          - task: CopyFiles@2
+            displayName: 'Copy objects'
+            inputs:
+              SourceFolder: '$(System.DefaultWorkingDirectory)/[REDACTED]'
+              TargetFolder: '$(System.DefaultWorkingDirectory)/[REDACTED]/[REDACTED]'
+              OverWrite: true
+
+          #####################################################################
+          # Update the version.json for the web project using the pipeline version
+          #####################################################################
+          - powershell: |
+              $jsonFilePath = "$(System.DefaultWorkingDirectory)\[REDACTED]\version.json"
+              
+              $json = Get-Content $jsonFilePath | ConvertFrom-Json
+              
+              $releaseName = "$(Build.BuildNumber)"
+              $versionParts = $releaseName -split '\.'
+              
+              $json.versionName = "v" + $versionParts[0]
+              $json.majorVersion = $versionParts[0]
+              $json.interimVersion = $versionParts[1]
+              $json.hotfixVersion = $versionParts[2]
+              
+              $json | ConvertTo-Json | Set-Content $jsonFilePath -Force
+            displayName: 'Append the version.json with the pipeline version'
+
+          - task: OneLuckiDev.json2variable.vsts-json-to-variable.oneLuckiDevJson2Variable@1
+            displayName: 'JSON to Variable'
+            inputs:
+              jsonFile: '$(System.DefaultWorkingDirectory)/[REDACTED]/version.json'
+              variablePrefix: versionJson2
+
+          #####################################################################
+          # Fetch NuGet dependencies for web solution
+          #####################################################################
+          - task: NuGetToolInstaller@1
+            displayName: 'Use NuGet'
+
+          - task: NuGetCommand@2
+            displayName: 'Fetch Nugets'
+            inputs:
+              restoreSolution: '**/**/*.sln'
+              vstsFeed: '[REDACTED GUID]'
+
+          #####################################################################
+          # Build the web solution
+          #####################################################################
+          - task: VSBuild@1
+            displayName: Build web
+            inputs:
+              solution: '$(System.DefaultWorkingDirectory)/[REDACTED]/[REDACTED].sln'
+              msbuildArgs: '/p:DeployOnBuild=true /p:WebPublishMethod=FileSystem /p:PackageAsSingleFile=false /p:SkipInvalidConfigurations=true'
+              platform: '$(buildPlatform)'
+              configuration: '$(buildConfiguration)'
+
+          #####################################################################
+          # Replace tokens in config files for environment-based variables
+          #####################################################################
+          - task: qetza.replacetokens.replacetokens-task.replacetokens@5
+            displayName: 'Replace tokens in **/*.config'
+            inputs:
+              rootDirectory: '$(System.DefaultWorkingDirectory)/[REDACTED]/obj/Release/Package/PackageTmp'
+              tokenPattern: azpipelines
+              defaultValue: 'Data Source=Source; Initial Catalog=DB; Integrated Security=false; User ID=user; Password=password;'
+
+          #####################################################################
+          # Archive the built web application into "Web Application.zip"
+          #####################################################################
+          - task: ArchiveFiles@2
+            displayName: 'Archive $(System.DefaultWorkingDirectory)/[REDACTED]/obj/Release/Package/PackageTmp'
+            inputs:
+              rootFolderOrFile: '$(System.DefaultWorkingDirectory)/[REDACTED]/obj/Release/Package/PackageTmp'
+              includeRootFolder: false
+              archiveFile: '$(Build.ArtifactStagingDirectory)/Web Application.zip'
+
+          #####################################################################
+          # Copy the Web Application archive to the shared folder
+          #####################################################################
+          - task: CopyFiles@2
+            displayName: 'Copy Files to: [REDACTED]/$(Build.BuildNumber)'
+            inputs:
+              SourceFolder: '$(Build.ArtifactStagingDirectory)'
+              Contents: '**Web Application.zip'
+              TargetFolder: '[REDACTED]/$(Build.BuildNumber)'
+
+  #############################################################################
+  # STAGE: Deploy
+  # Deploys the built artifacts (web and service) onto a target environment,
+  # performs DB updates, restarts services, and then runs automated tests.
+  #############################################################################
+  - stage: Deploy
+    displayName: 'Deploy and test'
+    jobs:
+      - job:
+        pool: 
+          name: [REDACTED]               # Pool for deployment environment
+          demands:
+            - Agent.Name -equals [REDACTED]
+
+        steps:
+          #####################################################################
+          # Checkout the pipeline's own repo (for any scripts/resources stored here)
+          #####################################################################
+          - checkout: self
+            submodules: true
+
+          #####################################################################
+          # Stop the Windows service before overwriting files
+          #####################################################################
+          - task: jungeriusit.jungit-winservices.jungit-stopwinservice.StopWindowsService@1
+            displayName: 'Stop windows service [REDACTED]'
+            inputs:
+              serviceName: [REDACTED]
+
+          #####################################################################
+          # Remove old web files from IIS folder
+          #####################################################################
+          - task: DeleteFiles@1
+            displayName: 'Delete files from C:\\inetpub\\wwwroot\\[REDACTED]'
+            inputs:
+              SourceFolder: 'C:\\inetpub\\wwwroot\\[REDACTED]'
+              Contents: '**'
+              RemoveSourceFolder: true
+
+          #####################################################################
+          # Remove existing Web Application.zip from the root
+          #####################################################################
+          - task: DeleteFiles@1
+            displayName: 'Delete web application'
+            inputs:
+              SourceFolder: 'C:\\inetpub\\wwwroot\\Web Application.zip'
+              Contents: '**'
+              RemoveSourceFolder: true
+          
+          #####################################################################
+          # PowerShell script to force delete the old WAP Service folder
+          #####################################################################
+          - task: PowerShell@2
+            displayName: "Force delete WAP Service"
+            inputs:
+              targetType: inline
+              script: |
+                $folderPath = "C:\\Program Files (x86)\\[REDACTED]\\[REDACTED]"
+
+                if (Test-Path $folderPath) {
+                  Remove-Item -Path $folderPath -Recurse -Force
+                  Write-Host "Folder '$folderPath' has been force-deleted."
+                }
+                else {
+                  Write-Host "Folder '$folderPath' does not exist."
+                }
+
+          #####################################################################
+          # Map a drive to the file share and copy the newly built artifacts locally
+          #####################################################################
+          - task: PowerShell@2
+            displayName: 'Map drive and copy files'
+            inputs:
+              targetType: 'inline'
+              script: |
+                if (Test-Path "X:\") {
+                    net use X: /delete /y
+                }
+
+                net use X: "[REDACTED]" /user:[REDACTED] [REDACTED]
+
+                Copy-Item "X:\[REDACTED]\$(Build.BuildNumber)" "$(System.ArtifactsDirectory)" -Recurse -Force
+
+                net use X: /delete /y
+
+          #####################################################################
+          # Capture the directory path where 'Web Application.zip' was copied to
+          #####################################################################
+          - task: PowerShell@2
+            displayName: 'PowerShell Script'
+            env:
+              WORKDIR: $(System.DefaultWorkingDirectory)
+            inputs:
+              targetType: 'inline'
+              script: |
+                $zipFile = Get-ChildItem -Path "$(System.ArtifactsDirectory)" -Recurse -Filter "Web Application.zip" | Select-Object -First 1
+                Write-Output "##vso[task.setvariable variable=ZipFileDirectory]$($zipFile.Directory.FullName)"
+
+          #####################################################################
+          # Copy the web application ZIP to the IIS folder
+          #####################################################################
+          - task: CopyFiles@2
+            displayName: 'Copy web application'
+            inputs:
+              SourceFolder: '$(ZipFileDirectory)'
+              Contents: '**/Web Application.zip'
+              TargetFolder: 'C:\\inetpub\\wwwroot\\'
+              OverWrite: true
+              retryCount: 10
+
+          #####################################################################
+          # Create the folder for the web application if it doesn't exist
+          #####################################################################
+          - task: PowerShell@2
+            displayName: 'Create WAP'
+            env:
+              WORKDIR: $(System.DefaultWorkingDirectory)
+            inputs:
+              targetType: 'inline'
+              script: |
+                $folderPath = "C:\\inetpub\\wwwroot\\[REDACTED]"
+                
+                if (Test-Path $folderPath) {
+                    Write-Host "The folder already exists at path: $folderPath"
+                } else {
+                    try {
+                        New-Item -ItemType Directory -Path $folderPath -Force
+                        Write-Host "Folder created successfully at path: $folderPath"
+                    } catch {
+                        Write-Host "An error occurred while creating the folder: $_"
+                    }
+                }
+
+          #####################################################################
+          # Unzip the web application package into the newly created folder
+          #####################################################################
+          - task: ms-devlabs.utilitytasks.task-unzip.unzip@0
+            displayName: UnZip
+            inputs:
+              pathToZipFile: 'C:\inetpub\wwwroot\Web Application.zip'
+              pathToZipFolder: 'C:\inetpub\wwwroot\[REDACTED]'
+
+          #####################################################################
+          # Replace the database connection string in the Web.config
+          #####################################################################
+          - task: PowerShell@2
+            displayName: 'Replace database connect string'
+            env:
+              WORKDIR: $(System.DefaultWorkingDirectory)
+            inputs:
+              targetType: 'inline'
+              script: |
+                $configFilePath = "C:\\inetpub\\wwwroot\\[REDACTED]\\Web.config"
+                
+                $newConnectionString = '[REDACTED]'
+                
+                try {
+                    [xml]$xml = Get-Content $configFilePath
+                    $connectionStringNode = $xml.configuration.connectionStrings.add | Where-Object { $_.name -eq 'DatabaseConnectString' }
+                
+                    if ($connectionStringNode -ne $null) {
+                        $connectionStringNode.connectionString = $newConnectionString
+                    } else {
+                        Write-Host "Connection string 'DatabaseConnectString' not found in the config file."
+                        exit 1
+                    }
+                
+                    $xml.Save($configFilePath)
+                
+                    Write-Host "Config file '$configFilePath' updated successfully."
+                }
+                catch {
+                    Write-Host "Error occurred: $_"
+                }
+
+          #####################################################################
+          # Locate the Approvals Service ZIP for the next copy step
+          #####################################################################
+          - powershell: |
+              $zipFile2 = Get-ChildItem -Path "$(System.ArtifactsDirectory)" -Recurse -Filter "Approvals Service.zip" | Select-Object -First 1
+              Write-Output "##vso[task.setvariable variable=ZipFileDirectory2]$($zipFile2.Directory.FullName)"
+            displayName: 'PowerShell Script'
+
+          #####################################################################
+          # Copy the Approvals Service ZIP to a local folder for extraction
+          #####################################################################
+          - task: CopyFiles@2
+            displayName: 'Copy approvals service'
+            inputs:
+              SourceFolder: '$(ZipFileDirectory2)'
+              Contents: '**/Approvals Service.zip'
+              TargetFolder: 'C:\\Program Files (x86)\\[REDACTED]\\'
+              OverWrite: true
+              retryCount: 10
+
+          #####################################################################
+          # Create the service folder if it doesn't exist
+          #####################################################################
+          - powershell: |
+              $folderPath = "C:\\Program Files (x86)\\[REDACTED]\\[REDACTED]"
+              
+              if (Test-Path $folderPath) {
+                  Write-Host "The folder already exists at path: $folderPath"
+              } else {
+                  try {
+                      New-Item -ItemType Directory -Path $folderPath -Force
+                      Write-Host "Folder created successfully at path: $folderPath"
+                  } catch {
+                      Write-Host "An error occurred while creating the folder: $_"
+                  }
+              }
+            displayName: 'Create WAP service copy'
+
+          #####################################################################
+          # Unzip the Approvals Service into the WAP Service folder
+          #####################################################################
+          - task: ms-devlabs.utilitytasks.task-unzip.unzip@0
+            displayName: 'UnZip copy'
+            inputs:
+              pathToZipFile: 'C:\\Program Files (x86)\\[REDACTED]\\Approvals Service.zip'
+              pathToZipFolder: 'C:\\Program Files (x86)\\[REDACTED]\\[REDACTED]'
+
+          #####################################################################
+          # Remove any old copies of the .exe.config file to ensure a clean config
+          #####################################################################
+          - task: DeleteFiles@1
+            displayName: 'Delete old service exe'
+            inputs:
+              SourceFolder: 'C:\\Program Files (x86)\\[REDACTED]\\[REDACTED]'
+              Contents: '*Sicon.Web.WAP.Service.exe.config'
+
+          #####################################################################
+          # Copy the correct config file from a second folder (if needed)
+          #####################################################################
+          - task: CopyFiles@2
+            displayName: 'Copy service exe'
+            inputs:
+              SourceFolder: 'C:\\Program Files (x86)\\[REDACTED]\\[REDACTED]2'
+              Contents: '*Sicon.Web.WAP.Service.exe.config'
+              TargetFolder: 'C:\\Program Files (x86)\\[REDACTED]\\[REDACTED]'
+              OverWrite: true
+
+          #####################################################################
+          # Run a PowerShell script to restore a database for testing
+          #####################################################################
+          - powershell: |
+              $serverName = "[REDACTED]"
+              $databaseName = "[REDACTED]"
+              $scriptPath = "C:\\Users\\[REDACTED]\\Desktop\\[REDACTED].sql"
+              
+              if (-Not (Test-Path -Path $scriptPath)) {
+                  Write-Error "The specified SQL script file does not exist: $scriptPath"
+                  exit 1
+              }
+              
+              $connectionString = "Server=$serverName;Database=$databaseName;Integrated Security=True;"
+              
+              $sqlScript = Get-Content -Path $scriptPath -Raw
+              
+              try {
+                  Invoke-Sqlcmd -ServerInstance $serverName -Database $databaseName -Query $sqlScript -QueryTimeout 180
+                  Write-Output "SQL script executed successfully."
+              } catch {
+                  Write-Error "Error executing SQL script: $_"
+                  exit 1
+              }
+            displayName: 'Restore DB'
+
+          #####################################################################
+          # Recycle the IIS App Pool to pick up any new changes
+          #####################################################################
+          - task: IISWebAppManagementOnMachineGroup@0
+            displayName: 'Manage IISApplicationPool'
+            inputs:
+              IISDeploymentType: IISApplicationPool
+              ActionIISApplicationPool: RecycleAppPool
+              StartStopRecycleAppPoolName: '[REDACTED]'
+            timeoutInMinutes: 5
+            retryCountOnTaskFailure: 5
+
+          #####################################################################
+          # Start the Windows service again to finalize the deployment
+          #####################################################################
+          - task: jungeriusit.jungit-winservices.jungit-startwinservice.StartWindowsService@1
+            displayName: 'Start windows service [REDACTED]'
+            inputs:
+              serviceName: [REDACTED]
+            timeoutInMinutes: 10
+            retryCountOnTaskFailure: 5
+
+          #####################################################################
+          # Install Node 18.x, necessary for Playwright tests
+          #####################################################################
+          - task: NodeTool@0
+            displayName: 'Use Node 18x'
+            inputs:
+              versionSpec: 18.x
+
+          #####################################################################
+          # Install Playwright dependencies
+          #####################################################################
+          - script: 'npx playwright install --with-deps'
+            displayName: Install playwright dependencies
+          
+          #####################################################################
+          # Install the Playwright testing framework
+          #####################################################################
+          - script: 'npm install @playwright/test'
+            displayName: 'npm install @playwright/test'
+          
+          #####################################################################
+          # Run an initial login test
+          #####################################################################
+          - script: |
+              npx playwright test LoginToApprovals.spec.js --workers=1
+            workingDirectory: '$(System.DefaultWorkingDirectory)'
+            displayName: 'Run initial login test'
+            continueOnError: true
+          
+          #####################################################################
+          # Run the main suite of Playwright tests
+          #####################################################################
+          - script: 'npx playwright test ApprovalsPlaywright'
+            workingDirectory: '$(System.DefaultWorkingDirectory)'
+            displayName: 'Run playwright tests'
+            continueOnError: true
+          
+          #####################################################################
+          # Publish test results, if generated
+          #####################################################################
+          - task: PublishTestResults@2
+            displayName: 'Publish Test Results **/report.xml'
+            inputs:
+              testResultsFiles: '**/report.xml'
+            condition: always()
