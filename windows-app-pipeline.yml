@@ -1,0 +1,515 @@
+###############################################################################
+# This file defines a multi-stage Azure DevOps pipeline for building,
+# packaging, copying, and deploying our web application addon files (.sdbx)
+# on a scheduled basis. Sensitive or company-specific details have been
+# replaced with [REDACTED].
+###############################################################################
+
+trigger:
+  branches:
+    include:
+      - master
+      - releases/*
+
+schedules:
+  - cron: "0 2 * * *"
+    displayName: Nightly commit build
+    branches:
+      include:
+        - dev
+    always: false
+
+
+variables:
+  TestCompletePath: "[REDACTED]\\[REDACTED]"
+  TestPlan: "[REDACTED]"
+  TestConfiguration: "[REDACTED]"
+
+  versionNumber : "[REDACTED]"
+  outputFolder: "[REDACTED]\\[REDACTED]\\[REDACTED]\\[REDACTED]"
+  archiveFolder: "[REDACTED]\\[REDACTED]\\[REDACTED]\\[REDACTED]"
+  mainFolder: "[REDACTED]\\[REDACTED]\\[REDACTED]"
+  multiPackageLocation: "[REDACTED]"
+  addonPackageLocation: "[REDACTED]\\[REDACTED]"
+  webApidllpath: "[REDACTED]\\bin\\Release\\[REDACTED]"
+  docOutputPath: "C:\\[REDACTED]\\[REDACTED]"
+  alias: "[REDACTED]"
+  productShortName: "[REDACTED]"
+
+  tcBranch: ''
+  multipackageInVM: ''
+  interimFolder: ''
+  ProjectFile: ''
+  TestSuite: ''
+  Suite: ''
+
+# Pipeline name uses versionNumber plus a revision
+name: $(versionNumber)$(Rev:.r)
+
+resources:
+  repositories:
+    - repository: common
+      type: git
+      name: [REDACTED]
+      ref: refs/heads/$(tcBranch)
+    - repository: pipelines
+      type: git
+      name: [REDACTED]
+      ref: refs/heads/main
+
+###############################################################################
+# STAGES
+###############################################################################
+stages:
+
+  #########################################################################
+  # STAGE 1: BUILD
+  # Combined from previously separate template content, with redactions.
+  #########################################################################
+  - stage: Build
+    displayName: "Build package"
+    jobs:
+      - job: "Build"
+        variables:
+          - name: solution
+            value: $[ coalesce(variables['BuildSolutions'], '**/*.sln;!**/*.Install.sln') ]
+          - name: buildPlatform
+            value: 'Any CPU'
+          - name: buildConfiguration
+            value: $[ coalesce(variables['BuildConfiguration'], 'Release') ]
+          - name: buildNo
+            value: $(Rev:.r)
+          - name: versionNumberFromMpp
+            value: ''
+          - name: nugetFeed
+            value: '[REDACTED GUID]'
+          - group: [REDACTED]   # Name of a variable group; redacted
+          - name: packagesToPack
+            value: $[ coalesce(variables['PackProjects'], '**/*.csproj;!**/*.Test*.csproj') ]
+
+        pool:
+          name: [REDACTED]         # Agent pool name
+          demands: "DotNetFramework_3.5"
+
+        steps:
+          # Pull down the pipeline's own repo
+          - checkout: self
+            submodules: true
+            clean: true
+
+          # Install specific NuGet version
+          - task: NuGetToolInstaller@1
+            inputs:
+              versionSpec: "6.0.0"
+ 
+          # Authenticate additional private feeds (redacted info)
+          - task: NuGetAuthenticate@0
+            condition: and(succeeded(), ne(variables['AdditionalNuGetFeeds'], ''))
+            inputs:
+              nuGetServiceConnections: $(AdditionalNuGetFeeds)
+
+          # Install Chocolatey
+          - task: ChocolateyToolInstaller@0
+
+          # Install Multipackager (redacted internal feed URL)
+          - powershell: choco install [REDACTED].portable -y -s="'[REDACTED URL]'" -u ${env:NUGET_USERNAME} -p ${env:NUGET_PASSWORD}
+            env:
+              NUGET_USERNAME: [REDACTED]
+              NUGET_PASSWORD: [REDACTED]
+
+          # Restore NuGet packages
+          - task: NuGetCommand@2
+            displayName: "Nuget Restore"
+            inputs:
+              restoreSolution: '$(solution)'
+              feedsToUse: 'select'
+              vstsFeed: '$(nugetFeed)'
+
+          # Build Project
+          - task: VSBuild@1
+            displayName: "Build Project"
+            condition: and(succeeded(), eq(variables['NoBuildRequired'], ''))
+            inputs:
+              solution: '$(solution)'
+              msbuildArgs: >-
+                -m /p:SiconPackageVersion="$(versionNumber)"
+                /p:BUILDNO="$(buildNo)"
+                /p:DeployOnBuild=true
+                /p:WebPublishMethod=Package
+                /p:PackageAsSingleFile=true
+                /p:SkipInvalidConfigurations=true
+                /p:PackageLocation="$(build.artifactStagingDirectory)"
+              platform: '$(buildPlatform)'
+              configuration: '$(buildConfiguration)'
+              clean: true
+
+          # Unit Tests
+          - task: VSTest@2
+            displayName: "Unit Tests"
+            inputs:
+              testSelector: 'testAssemblies'
+              testAssemblyVer2: '**\*unittest*.dll\n!**\*TestAdapter.dll\n!**\obj\**'
+              searchFolder: '$(System.DefaultWorkingDirectory)'
+              runInParallel: true        
+              platform: '$(buildPlatform)'
+              configuration: '$(buildConfiguration)'
+
+          # Update Multipackager.mpp
+          - task: PowerShell@2
+            displayName: "Append mpp file"
+            env:
+              WORKDIR: $(System.DefaultWorkingDirectory)
+            inputs:
+              targetType: 'inline'
+              script: |
+                [xml]$xmlDoc = Get-Content "$(System.DefaultWorkingDirectory)\$(multiPackageLocation)\Multipackager.mpp"
+
+                foreach ($element in $xmlDoc.MultipackagerProject) 
+                { 
+                  $element.PackageVersionNumber = "$(Build.BuildNumber)"
+                }
+                
+                $versionNumber = $element.PackageVersionNumber
+                $xmlDoc.Save("$(System.DefaultWorkingDirectory)\$(multiPackageLocation)\Multipackager.mpp")
+
+                Write-Host "##vso[task.setvariable variable=versionNumberFromMpp;]$versionNumber"
+
+          # Display the newly set versionNumberFromMpp
+          - task: PowerShell@2
+            displayName: Get version number
+            condition: always()
+            inputs:
+              targetType: 'inline'
+              script: 'Write-Output "The version number is $(versionNumberFromMpp)"'
+
+          # Run Multipackager
+          - task: PowerShell@2
+            displayName: "Multipackager"
+            env:
+              WORKDIR: $(System.DefaultWorkingDirectory)
+            inputs:
+              targetType: 'inline'
+              script: >
+                Get-Childitem –Path $env:WORKDIR -Include *.mpp -Recurse 
+                | % { [REDACTED].exe "$_" -build2017 }
+
+          # Append pipeline BuildNumber to all .sdbx files
+          - task: PowerShell@2
+            displayName: "Append Version to SDBX"
+            env:
+              WORKDIR: $(System.DefaultWorkingDirectory)
+            inputs:
+              targetType: 'inline'
+              script: >
+                Get-Childitem –Path $env:WORKDIR -Include *.sdbx -Recurse 
+                | % { rename-item –path $_.Fullname –Newname ( $_.basename + " $(Build.BuildNumber)" + $_.extension) }
+
+          # Clean artifact staging
+          - task: DeleteFiles@1
+            displayName: "Tidy Artifacts Staging Folder"
+            inputs:
+              SourceFolder: '$(Build.ArtifactStagingDirectory)'
+              Contents: '**/*'
+
+          # Copy .sdbx to staging
+          - task: CopyFiles@2
+            displayName: "Copy SDBX to Artifacts Staging Folder"
+            inputs:
+              SourceFolder: '$(System.DefaultWorkingDirectory)'
+              Contents: '**\\*.sdbx'
+              TargetFolder: '$(Build.ArtifactStagingDirectory)'
+
+          # Publish as build artifacts
+          - task: PublishBuildArtifacts@1
+            displayName: "Publish SDBX to Artifacts"
+            inputs:
+              publishLocation: Container
+
+          # NuGet pack
+          - task: DotNetCoreCLI@2
+            displayName: "Nuget Pack"
+            condition: succeeded()
+            inputs:
+              command: 'pack'
+              packagesToPack: '$(packagesToPack)'
+              nobuild: true
+              includesymbols: true
+              includesource: true
+              versioningScheme: 'off'
+              buildProperties: 'SiconPackageVersion="$(versionNumberFromMpp)"'
+
+          # Push packages to feed
+          - task: NuGetCommand@2
+            displayName: "Nuget Push"
+            condition: succeeded()
+            inputs:
+              command: 'push'
+              packagesToPush: '$(Build.ArtifactStagingDirectory)/**/*.nupkg;$(Build.ArtifactStagingDirectory)/**/*.symbols.nupkg'
+              nuGetFeedType: 'internal'
+              publishVstsFeed: '$(nugetFeed)'
+              allowPackageConflicts: true
+              verbosityPush: 'Normal'
+
+          # Remove old .sdbx files
+          - task: DeleteFiles@1
+            displayName: "Delete all SDBXs from output folder"
+            inputs:
+              SourceFolder: '[REDACTED]\\[REDACTED]\\$(outputFolder)'
+              Contents: '**\\*.sdbx'
+
+          # Copy new .sdbx to share
+          - task: CopyFiles@2
+            displayName: "Copy SDBX to [REDACTED] Drive"
+            inputs:
+              SourceFolder: '$(System.DefaultWorkingDirectory)\$(addonPackageLocation)'
+              Contents: '**\\*.sdbx'
+              TargetFolder: '[REDACTED]\\[REDACTED]\\$(outputFolder)'
+
+  #########################################################################
+  # STAGE 2: TEST
+  # Combined from previously separate template content, with redactions.
+  #########################################################################
+  - stage: Test
+    displayName: "Install packages, enable features and run automated tests"
+    #dependsOn: Build  # Uncomment if needed
+    jobs:
+      - job: "Test"
+        timeoutInMinutes: 600
+        variables:
+          - name: 'versionNumberFromMpp'
+            value: ''
+
+        pool:
+          name: [REDACTED]  # Interactive pool
+
+        steps:
+          # Pull down repos if needed
+          - checkout: self
+          - checkout: common
+
+          # Capture the VM name for next stage
+          - task: PowerShell@2
+            displayName: OutputVMName
+            condition: always()
+            inputs:
+              targetType: 'inline'
+              script: |
+                $vmName = (Get-Item -Path 'HKLM:\\SOFTWARE\\Microsoft\\Virtual Machine\\Guest\\Parameters\').GetValue('VirtualMachineName')
+                Write-Host "##vso[task.setvariable variable=virtualMachineName;isOutput=true]$vmName"
+                Write-Output "The virtual machine name $vmName."
+            name: outputVM
+
+          - task: DeleteFiles@1
+            displayName: "Tidy upgrade folder"
+            inputs:
+              SourceFolder: 'C:\\[REDACTED]\\Upgrade'
+              Contents: '**\\*.sdbx'
+
+          - task: DeleteFiles@1
+            displayName: "Tidy local sdbx folder"
+            inputs:
+              SourceFolder: 'C:\\[REDACTED] Products'
+              Contents: '**\\*.sdbx'
+
+          - task: PowerShell@2
+            displayName: Wait again
+            inputs:
+              targetType: 'inline'
+              script: 'Start-Sleep 3'
+
+          - task: CopyFiles@2
+            displayName: 'Copy latest DB locally'
+            inputs:
+              SourceFolder: '[REDACTED]\\[REDACTED]\\Demo Data'
+              Contents: 'DemoData24.bak'
+              TargetFolder: 'C:\\[REDACTED]'
+              OverWrite: true
+
+          - task: PowerShell@2
+            displayName: Restore Latest Testing Database
+            inputs:
+              targetType: 'inline'
+              script: |
+                $serverName = "."
+                $databaseName = "[REDACTED]"
+                $scriptPath = "C:\\[REDACTED]\\Restore Databases for Testing.sql"
+
+                if (-Not (Test-Path -Path $scriptPath)) {
+                    Write-Error "Script file does not exist: $scriptPath"
+                    exit 1
+                }
+
+                $connectionString = "Server=$serverName;Database=$databaseName;Integrated Security=True;"
+                $sqlScript = Get-Content -Path $scriptPath -Raw
+
+                try {
+                    Invoke-Sqlcmd -ServerInstance $serverName -Database $databaseName -Query $sqlScript -QueryTimeout 180
+                    Write-Output "SQL script executed successfully."
+                } catch {
+                    Write-Error "Error executing SQL script: $_"
+                    exit 1
+                }
+
+          ###################################################################
+          # RequiredAddOns loop expanded into multiple CopyFiles tasks
+          ###################################################################
+          - task: CopyFiles@2
+            displayName: 'Copy SDBX locally ([REDACTED])'
+            inputs:
+              SourceFolder: '[REDACTED]\\[REDACTED]\\[REDACTED]'
+              Contents: '*.sdbx'
+              TargetFolder: 'C:\\[REDACTED] Products'
+
+          - task: CopyFiles@2
+            displayName: 'Copy SDBX locally ([REDACTED]\\[REDACTED]\\Testing)'
+            inputs:
+              SourceFolder: '[REDACTED]\\[REDACTED]\\[REDACTED]\\Testing'
+              Contents: '*.sdbx'
+              TargetFolder: 'C:\\[REDACTED] Products'
+
+          - task: CopyFiles@2
+            displayName: 'Copy SDBX locally ([REDACTED]\\[REDACTED]\\[REDACTED]\\Sage 200c)'
+            inputs:
+              SourceFolder: '[REDACTED]\\[REDACTED]\\[REDACTED]\\Sage 200c'
+              Contents: '*.sdbx'
+              TargetFolder: 'C:\\[REDACTED] Products'
+
+          - task: CopyFiles@2
+            displayName: 'Copy SDBX locally ([REDACTED]\\[REDACTED]\\[REDACTED]\\Sage 200c)'
+            inputs:
+              SourceFolder: '[REDACTED]\\[REDACTED]\\[REDACTED]\\Sage 200c'
+              Contents: '*.sdbx'
+              TargetFolder: 'C:\\[REDACTED] Products'
+
+          - task: CopyFiles@2
+            displayName: 'Copy SDBX locally ([REDACTED]\\[REDACTED]\\TEST - DO NOT DISTRIBUTE)'
+            inputs:
+              SourceFolder: '[REDACTED]\\[REDACTED]\\[REDACTED]\\TEST - DO NOT DISTRIBUTE'
+              Contents: '*.sdbx'
+              TargetFolder: 'C:\\[REDACTED] Products'
+
+          ###################################################################
+          # Continue with normal tasks
+          ###################################################################
+          - task: PowerShell@2
+            displayName: Copy SDBX to upgrade folder
+            inputs:
+              targetType: 'inline'
+              script: 'Get-ChildItem "C:\\[REDACTED] Products\\*" | Copy-Item -Destination "C:\\[REDACTED]\\Upgrade" -Recurse'
+
+          - task: PowerShell@2
+            displayName: Run Auto Installer
+            inputs:
+              filePath: 'C:\\[REDACTED]\\UpgradeSageScript.ps1'
+
+          - task: PowerShell@2
+            displayName: Start TestExecute
+            inputs:
+              targetType: 'inline'
+              script: 'Start-Process -FilePath "C:\\Program Files (x86)\\SmartBear\\TestExecute 15\\x64\\Bin\\TestExecute.exe"'
+
+          - task: VisualStudioTestPlatformInstaller@1
+            displayName: 'Visual Studio Test Platform Installer'
+            inputs:
+              versionSelector: 'latestStable'
+
+          - task: VSTest@2
+            timeoutInMinutes: '5'
+            displayName: 'add roles on sysadmin'
+            inputs:
+              testAssemblyVer2: '[REDACTED].pjs'
+              testSuite: '[REDACTED]'
+              searchFolder: '$(System.DefaultWorkingDirectory)\\[REDACTED]\\[REDACTED]\\'
+              uiTests: true
+              vsTestVersion: 'toolsInstaller'
+              pathtoCustomTestAdapters: 'C:\\Program Files (x86)\\SmartBear\\TestExecute 15\\TFS Integration\\[REDACTED]\\Modules'
+              runTestsInIsolation: true
+              testRunTitle: ' $(Build.BuildNumber) Test complete System Admin'
+              failOnMinTestsNotRun: true
+              rerunFailedTests: false
+              logsLevel: '0'
+
+          - task: VSTest@2
+            displayName: '[REDACTED] Tests'
+            inputs:
+              testSelector: testPlan
+              testPlan: '$(TestPlan)'
+              testSuite: '$(Suite)'
+              testConfiguration: '56'
+              searchFolder: '$(System.DefaultWorkingDirectory)\\$(TestCompletePath)'
+              uiTests: true
+              vsTestVersion: 'toolsInstaller'
+              pathtoCustomTestAdapters: 'C:\\Program Files (x86)\\SmartBear\\TestExecute 15\\TFS Integration\\[REDACTED]\\Modules'
+              runTestsInIsolation: true
+              testRunTitle: '$(Build.BuildNumber) Test complete'
+              failOnMinTestsNotRun: true
+              rerunFailedTests: false
+              logsLevel: '0'
+
+          - task: PublishTestResults@2
+            displayName: 'Publish Test Results'
+            inputs:
+              testResultsFiles: '*'
+              searchFolder: '$(Agent.TempDirectory)\\TestResults'
+            condition: always()
+
+          # Copy new SDBX back into main folder
+          - task: PowerShell@2
+            displayName: "Archive previous sdbx and copy current to appropriate folder"
+            condition: succeeded()
+            inputs:
+              targetType: 'inline'
+              script: |
+                Remove-Item "[REDACTED]\\[REDACTED]\\$(mainFolder)\\*.sdbx" -Exclude "*Reports*"
+                Write-Output "Dev SDBX removed"
+                Copy-Item "[REDACTED]\\[REDACTED]\\$(outputFolder)\\*.sdbx" -Destination "[REDACTED]\\[REDACTED]\\$(mainFolder)" -Exclude "*Reports*"
+                Write-Output "Dev SDBX copied to main folder"
+
+          # Upload any .mp4 (test failure videos, if present)
+          - task: CopyFiles@2
+            displayName: "Copy SDBX to Artifacts Staging Folder"
+            condition: always()
+            inputs:
+              SourceFolder: 'C:\\Users\\Administrator\\Videos'
+              Contents: '*.mp4'
+              TargetFolder: '$(Build.ArtifactStagingDirectory)'
+            continueOnError: true
+
+          - task: PublishBuildArtifacts@1
+            displayName: "upload failiure video"
+            condition: always()
+            inputs:
+              PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+              ArtifactName: 'failvid'
+              publishLocation: 'Container'
+            continueOnError: true
+
+  #########################################################################
+  # STAGE 3: RESTORE VM
+  # Combined from previously separate template content, with redactions.
+  #########################################################################
+  - stage: RestoreVM
+    dependsOn: Test
+    condition: always()
+    displayName: "Restore VM"
+    jobs:
+      - job: testingPowershell
+        displayName: "RestoreRestart"
+        variables:
+          vmName: $[ stageDependencies.Test.Test.outputs['outputVM.virtualMachineName'] ]
+        pool:
+          name: [REDACTED]
+
+        steps:
+          - checkout: none
+
+          - script: echo 'Virtual Machine Name = $(vmName)'
+
+          - task: PowerShell@2
+            displayName: "Restore Virtual Machine"
+            inputs:
+              targetType: 'inline'
+              script: |
+                Stop-VM -Name $(vmName) -Force
+                Restore-VMSnapshot -Name 'Base Restore' -VMName $(vmName) -Confirm:$false
+                Start-VM -Name $(vmName)
