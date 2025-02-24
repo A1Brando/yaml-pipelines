@@ -3,6 +3,8 @@
 # packaging, copying, and deploying several components (models, service, and
 # web) on a scheduled basis. Sensitive or company-specific details have been
 # replaced with [REDACTED].
+# This pipeline builds, deploys and then tests, mimics what the installer would do for this specfic web application.
+# Uses playwright for automated UI testing.
 ###############################################################################
 
 # Schedules define when (cron syntax) and how often this pipeline runs automatically
