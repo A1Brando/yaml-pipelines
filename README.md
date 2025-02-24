@@ -2,7 +2,7 @@
  
  There are varieties of each of these pipelines currently in use for different situations such as builds where NuGets are unwanted, where specfiic test environments are required and for different output depending on whether it is a production, release candiate or release branch build.
 
-### Screenshot of repository contain all templates I have created
+### Screenshot of repository containing all templates I have created
  ![Untitled](https://github.com/user-attachments/assets/383c4412-3be1-480d-b006-4c1d04f78992)
 
 ### Screenshot of release RC pipeline created for a web application 
@@ -11,5 +11,6 @@
 
 ### Screenshot of WinForm Application pipeline
 
-![image](https://github.com/user-attachments/assets/1c188c1a-bc5a-4ffc-beba-6301c843fbe5)
+![image](https://github.com/user-attachments/assets/90723b0e-c9a6-4da0-846e-6a9e807afb5b)
+
 
