@@ -1,0 +1,94 @@
+trigger:
+  tags:
+    include:
+      - '*'
+
+schedules:
+  - cron: "0 18 * * *"
+    displayName: Nightly build
+    branches:
+      include:
+        - dev
+    always: false
+
+resources:
+  repositories:
+  - repository: common
+    type: git
+    name: [REDACTED]
+    ref: refs/heads/$(tcBranch)
+
+  - repository: pipelines
+    type: git
+    name: [REDACTED]
+    ref: refs/heads/main
+
+variables:
+  outputFolder: "[REDACTED]\\dev\\200c\\TEST - DO NOT DISTRIBUTE"
+  mainFolder: "[REDACTED]\\dev\\200c"
+  addonPackageLocation: "[REDACTED]\\Add-on Packages\\2017"
+  multiPackageLocation: "[REDACTED]\\Add-on Packages"
+  archiveFolder: "[REDACTED]\\dev\\200c\\Archive"
+  interimFolder: "[REDACTED]\\dev\\200c\\Interim"
+  versionNumber : "[REDACTED]"
+  TestPlan: "[REDACTED]"
+  TestConfiguration: "[REDACTED]"
+  alias: "[REDACTED]"
+
+name: $(versionNumber)$(Rev:.r)
+
+stages:
+  - stage: Build
+    displayName: 'Build latest dev branch into SDBX and send to S drive'
+    jobs:
+      - template: build/sdbx-build-autoincrement-dev.yml@pipelines
+        parameters:
+          AddonPackageLocation: $(addonPackageLocation)
+          MultiPackageLocation: $(multiPackageLocation)
+          OutputFolder: $(outputFolder)
+          MainFolder: $(mainFolder)
+          VersionNumber: $(versionNumber)
+
+  - stage: Test
+    dependsOn: Build
+    displayName: Install packages, enable features and run automated tests
+    jobs:
+      - template: testing/sdbx-pipeline-test-products-test-plan-dev.yml@pipelines
+        parameters:
+          OutputFolder: $(outputFolder)
+          MainFolder: $(mainFolder)
+          ArchiveFolder: $(archiveFolder)
+          InterimFolder:  $(interimFolder)
+          suite: $(Suite)
+          testPlan: $(TestPlan)
+          testConfiguration: $(TestConfiguration)
+          Alias: $(alias)
+          RequiredAddOns:
+            - "[REDACTED]\\Addon Packages\\dev\\200c\\TEST - DO NOT DISTRIBUTE"
+            - "[REDACTED]\\dev\\200c\\TEST - DO NOT DISTRIBUTE"
+            - "[REDACTED]\\dev\\200c\\TEST - DO NOT DISTRIBUTE"
+            - "[REDACTED]\\dev\\200c\\TEST - DO NOT DISTRIBUTE"
+            - "[REDACTED]\\dev\\200c\\TEST - DO NOT DISTRIBUTE"
+            - "[REDACTED]\\dev\\200c\\TEST - DO NOT DISTRIBUTE"
+            - "[REDACTED]\\dev\\200c\\TEST - DO NOT DISTRIBUTE"
+            - "[REDACTED]\\dev\\200c\\TEST - DO NOT DISTRIBUTE"
+            - "[REDACTED]\\dev\\200c\\TEST - DO NOT DISTRIBUTE"
+            - "[REDACTED]\\23.2\\dev"
+            - "[REDACTED]\\dev\\200c\\TEST - DO NOT DISTRIBUTE"
+            - "[REDACTED]\\dev\\200c\\TEST - DO NOT DISTRIBUTE"
+            - "[REDACTED]\\dev\\200c\\TEST - DO NOT DISTRIBUTE"
+            - "[REDACTED]\\dev\\200c\\TEST - DO NOT DISTRIBUTE"
+            - "[REDACTED]\\dev\\200c\\TEST - DO NOT DISTRIBUTE"
+            - "[REDACTED]\\dev\\200c\\TEST - DO NOT DISTRIBUTE"
+            - "[REDACTED]\\dev\\200c\\Testing"
+            - "[REDACTED]\\dev\\200c\\TEST - DO NOT DISTRIBUTE"
+            - "[REDACTED]\\Self Service\\[REDACTED]\\200c"
+            - "[REDACTED]\\dev\\200c\\TEST - DO NOT DISTRIBUTE"
+            - "[REDACTED]\\dev\\200c\\TEST - DO NOT DISTRIBUTE"
+            - "[REDACTED]\\dev\\200c"
+
+  - stage: RestoreVM
+    dependsOn: Test
+    condition: always()
+    jobs:
+      - template: tasks/vm-restore.yml@pipelines
